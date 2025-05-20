@@ -1,0 +1,9 @@
+# Ignore virtual environment
+venv/
+
+# Ignore Python bytecode
+__pycache__/
+*.pyc
+
+# Future: .env for secrets (API keys, tokens)
+.env
