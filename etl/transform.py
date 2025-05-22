@@ -1,12 +1,12 @@
 from datetime import datetime
 import json
 
-def transform_to_records(raw_api_responses, user_id=None):
+def transform_to_records(raw_json, budget=None):
     rows = []
     fetch_date = datetime.utcnow().isoformat()
     
-    # raw_api_responses is a list of dicts, each is one API response (per origin-destination combo)
-    for data in raw_api_responses:
+    # raw_json is a list of dicts, each is one API response (per origin-destination combo)
+    for data in raw_json:
         itineraries = data.get("data", {}).get("itineraries", [])
         
         for item in itineraries:
@@ -14,6 +14,8 @@ def transform_to_records(raw_api_responses, user_id=None):
             price_raw = item.get("price", {}).get("raw")
             if price_raw is None:
                 continue  # skip invalid prices
+            if budget is not None and price_raw > float(budget):
+                continue
             
             for i, leg in enumerate(legs):
                 leg_type = "outbound" if i == 0 else "return"

@@ -14,7 +14,7 @@ ENDPOINTS = {
     "oneway": f"{API_BASE}/flights/search-one-way"
 }
 
-async def fetch_raw_flights(user_data):
+async def fetch_raw_flights(user_data, budget=None):
     if not RAPIDAPI_KEY:
         raise Exception("Missing API Key")
 
@@ -42,4 +42,4 @@ async def fetch_raw_flights(user_data):
                 except Exception as e:
                     # handle or log error
                     continue
-    return all_results
+    return {"raw_flights": all_results, "budget": budget}
