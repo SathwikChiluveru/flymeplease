@@ -1,7 +1,7 @@
 import asyncio
 from etl.extract import fetch_raw_flights
 from etl.transform import transform_to_records
-from etl.load import load_to_csv
+from etl.load import load_to_csv, load_to_db
 
 user_data = {
     "trip_type": "roundtrip",
@@ -27,7 +27,9 @@ async def run_etl():
 
     print("💾 Loading data...")
     load_to_csv(records)
+    load_to_db(records)
     print("✅ Done! Saved to data/processed_flights.csv")
+    print("✅ Done with ETL to DB!")
 
 
 if __name__ == "__main__":

@@ -5,11 +5,10 @@ def transform_to_records(raw_json, budget=None):
     rows = []
     fetch_date = datetime.utcnow().isoformat()
     
-    # raw_json is a list of dicts, each is one API response (per origin-destination combo)
     for data in raw_json:
         itineraries = data.get("data", {}).get("itineraries", [])
         
-        for item in itineraries:
+        for item in sorted(itineraries, key=lambda x: x.get("price", {}).get("raw", float('inf'))):
             legs = item.get("legs", [])
             price_raw = item.get("price", {}).get("raw")
             if price_raw is None:
