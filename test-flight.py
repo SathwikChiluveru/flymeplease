@@ -4,12 +4,12 @@ from bot.flights import search_flights
 
 # Sample user input
 user_data = {
-    "trip_type": "roundtrip",
+    "trip_type": "One-way",
     "origin": ["SIN"],               # Singapore, Johor Bahru
-    "destination": ["JHB"],          # Kuala Lumpur, Dubai
-    "budget": 190,                           # Max budget in SGD
-    "dates": "2025-05-25",                  # Departure date
-    "return_date": "2025-05-30"             # Return date
+    "destination": ["KUL"],          # Kuala Lumpur, Dubai
+    "budget": 300,                           # Max budget in SGD
+    "dates": "2025-06-03",                  # Departure date
+    # "return_date": "2025-06-06"             # Return date
 }
 
 async def main():

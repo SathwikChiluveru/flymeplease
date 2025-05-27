@@ -1,6 +1,11 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup 
 from telegram.ext import ContextTypes, ConversationHandler, CommandHandler, MessageHandler, filters, CallbackQueryHandler
 from datetime import datetime, timedelta
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from etl_runner import run_etl
+import asyncio
 
 
 # States for the conversation
@@ -11,7 +16,7 @@ user_data_temp = {}
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [
-            InlineKeyboardButton("One-way", callback_data="oneway"),
+            InlineKeyboardButton("One-way", callback_data="one-way"),
             InlineKeyboardButton("Roundtrip", callback_data="roundtrip"),
         ]
     ]
@@ -67,6 +72,77 @@ async def set_currency(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📅 Choose your travel date:", reply_markup=reply_markup)
     return TRAVEL_DATES
 
+def format_flights_for_display(records, currency, max_flights=10):
+    # Group records by flight key
+    flights_map = {}
+    for rec in records:
+        key = (rec["fetch_date"], rec["price"], rec.get("score"), rec.get("tags"))
+        if key not in flights_map:
+            flights_map[key] = {
+                "price": rec["price"],
+                "route": " + ".join(
+            sorted(set(f"{leg['origin']}-{leg['destination']}" for leg in rec.get("legs", [])))
+            ),
+                "tags": rec.get("tags", ""),
+                "legs": []
+            }
+        for leg in rec.get("legs", []):
+            flights_map[key]["legs"].append({
+                "route": f"{leg['origin']}-{leg['destination']}",
+                "leg_type": leg["leg_type"],
+                "departure": leg["departure"],
+                "airline": leg["airline"],
+                "flight_number": leg["flight_number"]
+            })
+
+
+    all_flights = list(flights_map.values())
+
+    # Use your tag priority logic
+    tag_priority = ["cheapest", "second_cheapest", "third_cheapest"]
+
+    def tag_rank(flight):
+        tags = flight["tags"].split(", ")
+        for idx, t in enumerate(tag_priority):
+            if t in tags:
+                return idx
+        return len(tag_priority)
+
+    tagged_flights = [f for f in all_flights if any(t in f["tags"] for t in tag_priority)]
+    other_flights = [f for f in all_flights if not any(t in f["tags"] for t in tag_priority)]
+
+    tagged_flights.sort(key=tag_rank)
+    other_flights.sort(key=lambda f: f["price"])
+
+    top_flights = tagged_flights[:3] + other_flights[:max(0, max_flights - len(tagged_flights[:3]))]
+
+    # Format message lines
+    msg_lines = ["🛫 Top 10 Cheapest Flights:"]
+
+    for i, flight in enumerate(top_flights, 1):
+        special_label = ""
+        tags = flight["tags"]
+        if "cheapest" in tags:
+            special_label = "🏆 Cheapest!"
+        elif "second_cheapest" in tags:
+            special_label = "🥈 2nd Cheapest"
+        elif "third_cheapest" in tags:
+            special_label = "🥉 3rd Cheapest"
+        
+        # Compose routes for the flight (combine outbound and return)
+        routes = " + ".join(sorted(set(leg["route"] for leg in flight["legs"])))
+
+        msg_lines.append(f"{i}. {routes} - {flight['price']} {currency} {special_label}")
+
+        # Show each leg details below
+        for leg in sorted(flight["legs"], key=lambda x: x["leg_type"]):
+            dep_time = leg["departure"]
+            leg_type_label = leg["leg_type"].capitalize()
+            msg_lines.append(f"    {leg_type_label} Leg: {dep_time}, Airline: {leg['airline']}, Flight No: {leg['flight_number']}")
+
+    return "\n".join(msg_lines)
+
+
 async def handle_date_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -104,14 +180,23 @@ async def handle_date_selection(update: Update, context: ContextTypes.DEFAULT_TY
             return RETURN_DATE_SELECTION
         
         summary = (
-            f"✅ Preferences saved!\n\n"
-            f"Trip Type: One-way\n"
-            f"From: {', '.join(user_data_temp['origin'])}\n"
-            f"To: {', '.join(user_data_temp['destination'])}\n"
-            f"Budget: {user_data_temp['currency']} {user_data_temp['budget']}\n"
-            f"Departure Date: {user_data_temp['dates']}"
+            f"✅ Preferences Locked In!\n\n"
+            f"🧭 Trip Type: ✈️ One-way\n"
+            f"📍 From: {', '.join(user_data_temp['origin'])}\n"
+            f"📍 To: {', '.join(user_data_temp['destination'])}\n"
+            f"💰 Budget: {user_data_temp['currency']} {user_data_temp['budget']}\n"
+            f"📅 Departure Date: {user_data_temp['dates']}"
         )
-        await query.edit_message_text(summary)
+
+        await query.message.reply_text(summary + "\n\n⏳ Hang tight... looking for flights!")
+
+        try:
+            records = await run_etl(user_data_temp)
+            msg = format_flights_for_display(records, user_data_temp["currency"])
+            await query.message.reply_text(msg)
+        except Exception as e:
+            await query.message.reply_text(f"⚠️ Error searching flights: {e}")
+
         return ConversationHandler.END
     
 async def handle_return_date_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -140,15 +225,24 @@ async def handle_return_date_selection(update: Update, context: ContextTypes.DEF
 
         user_data_temp["return_date"] = ret_date.strftime("%Y-%m-%d")
         summary = (
-            f"✅ Preferences saved!\n\n"
-            f"Trip Type: Roundtrip\n"
-            f"From: {', '.join(user_data_temp['origin'])}\n"
-            f"To: {', '.join(user_data_temp['destination'])}\n"
-            f"Budget: {user_data_temp['currency']} {user_data_temp['budget']}\n"
-            f"Departure: {user_data_temp['dates']}\n"
-            f"Return: {user_data_temp['return_date']}"
+            f"✅ Preferences Locked In!\n\n"
+            f"🧭 Trip Type: ✈️ Round-Trip\n"
+            f"📍 From {', '.join(user_data_temp['origin'])}\n"
+            f"📍 To {', '.join(user_data_temp['destination'])}\n"
+            f"💰 Budget: {user_data_temp['currency']} {user_data_temp['budget']}\n"
+            f"📅 Departure Date: {user_data_temp['dates']}\n"
+            f"📅 Return Date: {user_data_temp['return_date']}"
         )
-        await query.edit_message_text(summary)
+
+        await update.callback_query.message.reply_text(summary + "\n\n⏳ Hang tight... looking for flights!")
+
+        try:
+            records = await run_etl(user_data_temp)
+            msg = format_flights_for_display(records, user_data_temp["currency"])
+            await query.message.reply_text(msg)
+        except Exception as e:
+            await query.message.reply_text(f"⚠️ Error searching flights: {e}")
+        
         return ConversationHandler.END
 
 async def handle_manual_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -163,7 +257,14 @@ async def handle_manual_date(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"Max Budget: {user_data_temp['currency']} {user_data_temp['budget']}\n"
             f"Travel Date: {user_data_temp['dates']}"
         )
-        await update.message.reply_text(summary)
+        await update.message.reply_text(summary + "\n\n⏳ Searching flights, please wait...")
+
+        try:
+            records = await run_etl(user_data_temp)
+            msg = format_flights_for_display(records, user_data_temp["currency"])
+            await update.message.reply_text(msg)
+        except Exception as e:
+            await update.message.reply_text(f"⚠️ Error searching flights: {e}")
         return ConversationHandler.END
     except ValueError:
         await update.message.reply_text("⚠️ Please enter a valid date in YYYY-MM-DD format:")

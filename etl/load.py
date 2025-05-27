@@ -18,11 +18,13 @@ def load_to_csv(records, filename="data/processed_flights.csv"):
             writer.writeheader()
         writer.writerows(records)
 
-def load_to_db(records):
+def load_to_db(trip_records):
 
-    if not records:
+    if not trip_records:
         print("No records to insert.")
         return
+    
+    trip_records = sorted(trip_records, key=lambda x: x["price"])
 
     USER = os.getenv("DB_USER")
     PASSWORD = os.getenv("DB_PASS")
@@ -41,57 +43,40 @@ def load_to_db(records):
         print("Connection successful!")
         cursor = connection.cursor()
 
-        # Step 1: Group records by flight (unique flight is by fetch_date, route, price, score, tags)
-        flights_map = {}  # key -> flight_data values + list of legs
-        for rec in records:
-            key = (rec["fetch_date"], rec["route"], rec["price"], rec.get("score"), rec.get("tags"))
-            if key not in flights_map:
-                flights_map[key] = {
-                    "flight_data": key,
-                    "legs": []
-                }
-            flights_map[key]["legs"].append({
-                "leg_type": rec["leg_type"],
-                "departure": rec["departure"],
-                "arrival": rec["arrival"],
-                "airline": rec["airline"],
-                "flight_number": rec["flight_number"]
-            })
+        # Insert into flight_data
+        flight_data_rows = [
+            (
+                str(rec["id"]), rec["fetch_date"], rec["trip_type"], str(rec["trip_id"]),
+                rec["origin"], rec["destination"], rec["price"], rec["score"], rec["tags"]
+            )
+            for rec in trip_records
+        ]
 
-        # Step 2: Insert flights and get their IDs
-        flight_data_rows = [fd["flight_data"] for fd in flights_map.values()]
-        insert_flight_data_query = """
-            INSERT INTO flight_data (fetch_date, route, price, score, tags)
-            VALUES %s RETURNING id
+        insert_data_query = """
+            INSERT INTO flight_data (id, fetch_date, trip_type, trip_id, origin, destination, price, score, tags)
+            VALUES %s
         """
-        execute_values(cursor, insert_flight_data_query, flight_data_rows)
-        flight_ids = [row[0] for row in cursor.fetchall()]
+        execute_values(cursor, insert_data_query, flight_data_rows)
 
-        # Step 3: Insert legs referencing flight_id
+        # Insert legs
         flight_legs_rows = []
-        for flight_id, fd in zip(flight_ids, flights_map.values()):
-            for leg in fd["legs"]:
+        for rec in trip_records:
+            for leg in rec["legs"]:
                 flight_legs_rows.append((
-                    flight_id,
-                    leg["leg_type"],
-                    leg["departure"],
-                    leg["arrival"],
-                    leg["airline"],
-                    leg["flight_number"]
+                    str(rec["trip_id"]), leg["leg_type"], leg["origin"], leg["destination"],
+                    leg["departure"], leg["arrival"], leg["airline"], leg["flight_number"]
                 ))
 
         insert_legs_query = """
-            INSERT INTO flight_legs (flight_id, leg_type, departure, arrival, airline, flight_number)
+            INSERT INTO flight_legs (trip_id, leg_type, origin, destination, departure, arrival, airline, flight_number)
             VALUES %s
         """
         execute_values(cursor, insert_legs_query, flight_legs_rows)
 
         connection.commit()
-        print(f"Inserted {len(flight_ids)} flight_data rows and {len(flight_legs_rows)} flight_legs rows.")
-
+        print(f"Inserted {len(trip_records)} flight_data and {len(flight_legs_rows)} legs.")
         cursor.close()
         connection.close()
-        print("Connection closed.")
 
     except Exception as e:
         print(f"Failed to connect or insert data: {e}")

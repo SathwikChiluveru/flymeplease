@@ -13,7 +13,7 @@ HEADERS = {
 
 ENDPOINTS = {
     "roundtrip": f"{API_BASE}/flights/search-roundtrip",
-    "oneway": f"{API_BASE}/flights/search-oneway"
+    "oneway": f"{API_BASE}/flights/search-one-way"
 }
 
 async def search_flights(user_data):

@@ -11,15 +11,15 @@ HEADERS = {
 
 ENDPOINTS = {
     "roundtrip": f"{API_BASE}/flights/search-roundtrip",
-    "oneway": f"{API_BASE}/flights/search-one-way"
+    "one-way": f"{API_BASE}/flights/search-one-way"
 }
 
 async def fetch_raw_flights(user_data, budget=None):
     if not RAPIDAPI_KEY:
         raise Exception("Missing API Key")
 
-    trip_type = user_data.get("trip_type", "oneway")
-    url = ENDPOINTS.get(trip_type, ENDPOINTS["oneway"])
+    trip_type = user_data.get("trip_type", "one-way")
+    url = ENDPOINTS.get(trip_type, ENDPOINTS["one-way"])
 
     all_results = []
 
