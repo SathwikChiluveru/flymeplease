@@ -55,6 +55,7 @@ def load_to_db(trip_records):
         insert_data_query = """
             INSERT INTO flight_data (id, fetch_date, trip_type, trip_id, origin, destination, price, score, tags)
             VALUES %s
+            ON CONFLICT (trip_id) DO NOTHING
         """
         execute_values(cursor, insert_data_query, flight_data_rows)
 

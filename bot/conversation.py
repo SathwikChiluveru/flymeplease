@@ -73,72 +73,54 @@ async def set_currency(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return TRAVEL_DATES
 
 def format_flights_for_display(records, currency, max_flights=10):
-    # Group records by flight key
-    flights_map = {}
+    if not records:
+        return "⚠️ No flights found matching your criteria."
+
+    # Group flights by full round-trip (assumes each record contains 2 legs)
+    round_trips = []
     for rec in records:
-        key = (rec["fetch_date"], rec["price"], rec.get("score"), rec.get("tags"))
-        if key not in flights_map:
-            flights_map[key] = {
+        legs = rec.get("legs", [])
+        if len(legs) >= 2:
+            legs = sorted(legs, key=lambda x: 0 if x["leg_type"] == "outbound" else 1)[:2]
+            round_trips.append({
                 "price": rec["price"],
-                "route": " + ".join(
-            sorted(set(f"{leg['origin']}-{leg['destination']}" for leg in rec.get("legs", [])))
-            ),
-                "tags": rec.get("tags", ""),
-                "legs": []
-            }
-        for leg in rec.get("legs", []):
-            flights_map[key]["legs"].append({
-                "route": f"{leg['origin']}-{leg['destination']}",
-                "leg_type": leg["leg_type"],
-                "departure": leg["departure"],
-                "airline": leg["airline"],
-                "flight_number": leg["flight_number"]
+                "legs": legs
+            })
+        elif len(legs) == 1:
+            # fallback in case it's a one-way mistakenly labeled as round-trip
+            round_trips.append({
+                "price": rec["price"],
+                "legs": legs
             })
 
+    round_trips.sort(key=lambda x: x["price"])
+    top_round_trips = round_trips[:max_flights]
 
-    all_flights = list(flights_map.values())
+    msg_lines = ["🛫 *Top 10 Cheapest Flights:*\n"]
 
-    # Use your tag priority logic
-    tag_priority = ["cheapest", "second_cheapest", "third_cheapest"]
+    for i, flight in enumerate(top_round_trips, 1):
+        legs = flight["legs"]
+        full_route = " -> ".join([f"{leg['origin']}" for leg in legs] + [legs[-1]["destination"]])
+        msg_lines.append(f"*{i}. {full_route}: {flight['price']} {currency}*")
 
-    def tag_rank(flight):
-        tags = flight["tags"].split(", ")
-        for idx, t in enumerate(tag_priority):
-            if t in tags:
-                return idx
-        return len(tag_priority)
+        for leg in legs:
+            try:
+                dt = datetime.fromisoformat(leg["departure"])
+                try:
+                    dep_time = dt.strftime("%-d %B %I:%M%p")  # Unix
+                except:
+                    dep_time = dt.strftime("%#d %B %I:%M%p")  # Windows
+            except:
+                dep_time = leg["departure"].replace("T", " ")
 
-    tagged_flights = [f for f in all_flights if any(t in f["tags"] for t in tag_priority)]
-    other_flights = [f for f in all_flights if not any(t in f["tags"] for t in tag_priority)]
+            msg_lines.append(f"📍 *Leg:* {leg['origin']} → {leg['destination']}")
+            msg_lines.append(f"🕒 *Departure:* {dep_time}")
+            msg_lines.append(f"✈️ *Airline:* {leg['airline']}")
+            msg_lines.append(f"🔢 *Flight No:* {leg['flight_number']}")
 
-    tagged_flights.sort(key=tag_rank)
-    other_flights.sort(key=lambda f: f["price"])
-
-    top_flights = tagged_flights[:3] + other_flights[:max(0, max_flights - len(tagged_flights[:3]))]
-
-    # Format message lines
-    msg_lines = ["🛫 Top 10 Cheapest Flights:"]
-
-    for i, flight in enumerate(top_flights, 1):
-        special_label = ""
-        tags = flight["tags"]
-        if "cheapest" in tags:
-            special_label = "🏆 Cheapest!"
-        elif "second_cheapest" in tags:
-            special_label = "🥈 2nd Cheapest"
-        elif "third_cheapest" in tags:
-            special_label = "🥉 3rd Cheapest"
-        
-        # Compose routes for the flight (combine outbound and return)
-        routes = " + ".join(sorted(set(leg["route"] for leg in flight["legs"])))
-
-        msg_lines.append(f"{i}. {routes} - {flight['price']} {currency} {special_label}")
-
-        # Show each leg details below
-        for leg in sorted(flight["legs"], key=lambda x: x["leg_type"]):
-            dep_time = leg["departure"]
-            leg_type_label = leg["leg_type"].capitalize()
-            msg_lines.append(f"    {leg_type_label} Leg: {dep_time}, Airline: {leg['airline']}, Flight No: {leg['flight_number']}")
+        if i != len(top_round_trips):
+            msg_lines.append("────────────────────")
+        msg_lines.append("")
 
     return "\n".join(msg_lines)
 
@@ -192,8 +174,12 @@ async def handle_date_selection(update: Update, context: ContextTypes.DEFAULT_TY
 
         try:
             records = await run_etl(user_data_temp)
+            # 🔍 DEBUG: Print all records returned by ETL
+            print("🔍 All ETL Records:")
+            for idx, rec in enumerate(records):
+                print(f"Record #{idx + 1}: {rec}")
             msg = format_flights_for_display(records, user_data_temp["currency"])
-            await query.message.reply_text(msg)
+            await query.message.reply_text(msg, parse_mode='Markdown')
         except Exception as e:
             await query.message.reply_text(f"⚠️ Error searching flights: {e}")
 
@@ -239,7 +225,7 @@ async def handle_return_date_selection(update: Update, context: ContextTypes.DEF
         try:
             records = await run_etl(user_data_temp)
             msg = format_flights_for_display(records, user_data_temp["currency"])
-            await query.message.reply_text(msg)
+            await query.message.reply_text(msg, parse_mode='Markdown')
         except Exception as e:
             await query.message.reply_text(f"⚠️ Error searching flights: {e}")
         
@@ -262,7 +248,7 @@ async def handle_manual_date(update: Update, context: ContextTypes.DEFAULT_TYPE)
         try:
             records = await run_etl(user_data_temp)
             msg = format_flights_for_display(records, user_data_temp["currency"])
-            await update.message.reply_text(msg)
+            await update.message.reply_text(msg, parse_mode='Markdown')
         except Exception as e:
             await update.message.reply_text(f"⚠️ Error searching flights: {e}")
         return ConversationHandler.END
