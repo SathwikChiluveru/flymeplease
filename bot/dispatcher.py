@@ -3,7 +3,7 @@ from telegram.ext import CommandHandler, ConversationHandler
 
 from handlers.start import start
 from handlers.search import search
-# from handlers.subscribe import subscribe  # New conversation handler
+from handlers.subscribe import subscribe  
 # from handlers.my_routes import my_routes  # New conversation handler
 from handlers.cancel import cancel
 # from handlers.help import help
@@ -26,7 +26,7 @@ def setup_dispatcher(app):
 
     # Simple Command Handlers 
     app.add_handler(CommandHandler("start", start))
-    # app.add_handler(CommandHandler("help", help))
+    app.add_handler(CommandHandler("subscribe", subscribe))
     app.add_handler(CommandHandler("cancel", cancel))
 
     # Conversation Handlers 
