@@ -1,19 +1,26 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup 
-from telegram.ext import ContextTypes, ConversationHandler, CommandHandler, MessageHandler, filters, CallbackQueryHandler
+from telegram.ext import (
+    ContextTypes, ConversationHandler, CommandHandler, MessageHandler, 
+    filters, CallbackQueryHandler
+)
 from datetime import datetime, timedelta
 import sys
 import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 from etl_runner import run_etl
+from utils.validators import is_valid_airport_code
+from utils.date_utils import get_today, get_tomorrow, get_next_saturday, get_next_week
+from utils.formatters import format_flights_for_display
+from utils.currency import convert_price, get_usd_to_currency_rate
 import asyncio
-
 
 # States for the conversation
 TRIP_TYPE, ORIGIN, DESTINATION, BUDGET, CURRENCY, TRAVEL_DATES, RETURN_DATE, RETURN_DATE_SELECTION = range(8)
 
 user_data_temp = {}
 
-async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Entry point for the search command"""
     keyboard = [
         [
             InlineKeyboardButton("One-way", callback_data="one-way"),
@@ -33,6 +40,11 @@ async def set_trip_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def set_origin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     airports = [code.strip().upper() for code in text.split(",")]
+
+    if not all(is_valid_airport_code(code) for code in airports):
+        await update.message.reply_text("⚠️ Please enter valid 3-letter airport code(s), e.g., SIN, JHB.")
+        return ORIGIN
+
     user_data_temp["origin"] = airports
     await update.message.reply_text(
         "🛬 Where do you want to go? (you can enter multiple codes, e.g., KUL, DXB, LHR)"
@@ -42,18 +54,42 @@ async def set_origin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def set_destination(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     airports = [code.strip().upper() for code in text.split(",")]
+
+    if not all(is_valid_airport_code(code) for code in airports):
+        await update.message.reply_text("⚠️ Please enter valid 3-letter airport code(s), e.g., SIN, JHB.")
+        return DESTINATION
+
     user_data_temp["destination"] = airports
-    await update.message.reply_text("💰 What’s your budget?")
+    await update.message.reply_text("💰 What's your budget?")
     return BUDGET
 
 async def set_budget(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_data_temp["budget"] = update.message.text
+    user_data_temp["original_budget"] = update.message.text.strip()
     await update.message.reply_text("💱 What currency? (e.g., SGD, USD, EUR)")
     return CURRENCY
 
 async def set_currency(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data_temp["currency"] = update.message.text.strip().upper()
 
+    # Change the entered budget to USD
+
+    try:
+        rate = get_usd_to_currency_rate(user_data_temp["currency"])
+        original_budget = float(user_data_temp["original_budget"])
+        converted_budget = round(original_budget / rate, 2)
+
+        user_data_temp["budget_usd"] = converted_budget
+        user_data_temp["budget"] = original_budget
+
+        print(f"Original Budget: {user_data_temp['currency']} {user_data_temp['budget']:.2f}")
+        print(f"Converted Budget (USD): USD {user_data_temp['budget_usd']:.2f}")
+
+
+
+    except Exception as e:    
+        await update.message.reply_text(f"⚠️ Could not convert budget to USD: {e}. Assuming budget is in USD.")
+        user_data_temp["budget"] = float(user_data_temp["original_budget"])
+        user_data_temp["budget_usd"] = user_data_temp["budget"]
     keyboard = [
         [
             InlineKeyboardButton("Today", callback_data="date_today"),
@@ -72,59 +108,6 @@ async def set_currency(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📅 Choose your travel date:", reply_markup=reply_markup)
     return TRAVEL_DATES
 
-def format_flights_for_display(records, currency, max_flights=10):
-    if not records:
-        return "⚠️ No flights found matching your criteria."
-
-    # Group flights by full round-trip (assumes each record contains 2 legs)
-    round_trips = []
-    for rec in records:
-        legs = rec.get("legs", [])
-        if len(legs) >= 2:
-            legs = sorted(legs, key=lambda x: 0 if x["leg_type"] == "outbound" else 1)[:2]
-            round_trips.append({
-                "price": rec["price"],
-                "legs": legs
-            })
-        elif len(legs) == 1:
-            # fallback in case it's a one-way mistakenly labeled as round-trip
-            round_trips.append({
-                "price": rec["price"],
-                "legs": legs
-            })
-
-    round_trips.sort(key=lambda x: x["price"])
-    top_round_trips = round_trips[:max_flights]
-
-    msg_lines = ["🛫 *Top 10 Cheapest Flights:*\n"]
-
-    for i, flight in enumerate(top_round_trips, 1):
-        legs = flight["legs"]
-        full_route = " -> ".join([f"{leg['origin']}" for leg in legs] + [legs[-1]["destination"]])
-        msg_lines.append(f"*{i}. {full_route}: {flight['price']} {currency}*")
-
-        for leg in legs:
-            try:
-                dt = datetime.fromisoformat(leg["departure"])
-                try:
-                    dep_time = dt.strftime("%-d %B %I:%M%p")  # Unix
-                except:
-                    dep_time = dt.strftime("%#d %B %I:%M%p")  # Windows
-            except:
-                dep_time = leg["departure"].replace("T", " ")
-
-            msg_lines.append(f"📍 *Leg:* {leg['origin']} → {leg['destination']}")
-            msg_lines.append(f"🕒 *Departure:* {dep_time}")
-            msg_lines.append(f"✈️ *Airline:* {leg['airline']}")
-            msg_lines.append(f"🔢 *Flight No:* {leg['flight_number']}")
-
-        if i != len(top_round_trips):
-            msg_lines.append("────────────────────")
-        msg_lines.append("")
-
-    return "\n".join(msg_lines)
-
-
 async def handle_date_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -133,15 +116,14 @@ async def handle_date_selection(update: Update, context: ContextTypes.DEFAULT_TY
     today = datetime.today()
 
     if choice == "date_today":
-        selected_date = today.strftime("%Y-%m-%d")
+        selected_date = get_today()
     elif choice == "date_tomorrow":
-        selected_date = (today + timedelta(days=1)).strftime("%Y-%m-%d")
+        selected_date = get_tomorrow()
     elif choice == "date_weekend":
         # Find next Saturday
-        days_until_sat = (5 - today.weekday()) % 7
-        selected_date = (today + timedelta(days=days_until_sat)).strftime("%Y-%m-%d")
+        selected_date = get_next_saturday()
     elif choice == "date_next_week":
-        selected_date = (today + timedelta(days=7)).strftime("%Y-%m-%d")
+        selected_date = get_next_week
     elif choice == "date_manual":
         await query.edit_message_text("📆 Please type your travel date (YYYY-MM-DD):")
         return "WAITING_FOR_MANUAL_DATE"
@@ -173,7 +155,7 @@ async def handle_date_selection(update: Update, context: ContextTypes.DEFAULT_TY
         await query.message.reply_text(summary + "\n\n⏳ Hang tight... looking for flights!")
 
         try:
-            records = await run_etl(user_data_temp)
+            records = await run_etl({**user_data_temp, "budget": user_data_temp["budget_usd"]})
             # 🔍 DEBUG: Print all records returned by ETL
             print("🔍 All ETL Records:")
             for idx, rec in enumerate(records):
@@ -223,7 +205,7 @@ async def handle_return_date_selection(update: Update, context: ContextTypes.DEF
         await update.callback_query.message.reply_text(summary + "\n\n⏳ Hang tight... looking for flights!")
 
         try:
-            records = await run_etl(user_data_temp)
+            records = await run_etl({**user_data_temp, "budget": user_data_temp["budget_usd"]})
             msg = format_flights_for_display(records, user_data_temp["currency"])
             await query.message.reply_text(msg, parse_mode='Markdown')
         except Exception as e:
@@ -236,6 +218,20 @@ async def handle_manual_date(update: Update, context: ContextTypes.DEFAULT_TYPE)
     try:
         datetime.strptime(text, "%Y-%m-%d")
         user_data_temp["dates"] = text
+        
+        if user_data_temp["trip_type"] == "roundtrip":
+            keyboard = [
+                [InlineKeyboardButton("1 day after", callback_data="return_1d")],
+                [InlineKeyboardButton("3 days after", callback_data="return_3d")],
+                [InlineKeyboardButton("Next weekend", callback_data="return_weekend")],
+                [InlineKeyboardButton("Manual Date Entry", callback_data="return_manual")]
+            ]
+            await update.message.reply_text(
+                "📅 Choose your return date:",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return RETURN_DATE_SELECTION
+        
         summary = (
             f"✅ Preferences saved!\n\n"
             f"From: {', '.join(user_data_temp['origin'])}\n"
@@ -246,7 +242,7 @@ async def handle_manual_date(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text(summary + "\n\n⏳ Searching flights, please wait...")
 
         try:
-            records = await run_etl(user_data_temp)
+            records = await run_etl({**user_data_temp, "budget": user_data_temp["budget_usd"]})
             msg = format_flights_for_display(records, user_data_temp["currency"])
             await update.message.reply_text(msg, parse_mode='Markdown')
         except Exception as e:
@@ -254,7 +250,7 @@ async def handle_manual_date(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return ConversationHandler.END
     except ValueError:
         await update.message.reply_text("⚠️ Please enter a valid date in YYYY-MM-DD format:")
-        return "WAITING_FOR_MANUAL_DATE"
+        return TRAVEL_DATES  # Return to the same state to handle retry
     
 async def handle_return_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
@@ -276,27 +272,46 @@ async def handle_return_date(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"Departure: {user_data_temp['dates']}\n"
             f"Return: {user_data_temp['return_date']}"
         )
-        await update.message.reply_text(summary)
+        await update.message.reply_text(summary + "\n\n⏳ Searching flights, please wait...")
+
+        try:
+            records = await run_etl({**user_data_temp, "budget": user_data_temp["budget_usd"]})
+            msg = format_flights_for_display(records, user_data_temp["currency"])
+            await update.message.reply_text(msg, parse_mode='Markdown')
+        except Exception as e:
+            await update.message.reply_text(f"⚠️ Error searching flights: {e}")
+        
         return ConversationHandler.END
 
     except ValueError:
         await update.message.reply_text("⚠️ Invalid date format. Please use YYYY-MM-DD:")
         return RETURN_DATE
 
-
-
-async def set_travel_dates(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_data_temp["dates"] = update.message.text
-    summary = (
-        f"✅ All set! Here's what I got:\n\n"
-        f"From: {', '.join(user_data_temp['origin'])}\n"
-        f"To: {', '.join(user_data_temp['destination'])}\n"
-        f"Max Budget: {user_data_temp['currency']} {user_data_temp['budget']}\n"
-        f"Travel Date(s): {user_data_temp['dates']}"
-    )
-    await update.message.reply_text(summary)
-    return ConversationHandler.END
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cancel_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancel the search conversation"""
     await update.message.reply_text("❌ Search canceled.")
     return ConversationHandler.END
+
+def search():
+    """Creates and returns the ConversationHandler for search functionality"""
+    return ConversationHandler(
+        entry_points=[CommandHandler("search", start_search)],
+        states={
+            TRIP_TYPE: [CallbackQueryHandler(set_trip_type)],
+            ORIGIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_origin)],
+            DESTINATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_destination)],
+            BUDGET: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_budget)],
+            CURRENCY: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_currency)],
+            TRAVEL_DATES: [
+                CallbackQueryHandler(handle_date_selection),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_manual_date),
+            ],
+            RETURN_DATE_SELECTION: [
+                CallbackQueryHandler(handle_return_date_selection),
+            ],
+            RETURN_DATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_return_date),
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", cancel_search)],
+    )

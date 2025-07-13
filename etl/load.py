@@ -1,25 +1,11 @@
-import os, csv, psycopg2
+import os, psycopg2
 from pathlib import Path
 from dotenv import load_dotenv
 from psycopg2.extras import execute_values
 
 load_dotenv()
 
-def load_to_csv(records, filename="data/processed_flights.csv"):
-    Path("data").mkdir(exist_ok=True)
-    if not records:
-        return
-
-    file_exists = Path(filename).exists()
-
-    with open(filename, mode='a' if file_exists else 'w', newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=records[0].keys())
-        if not file_exists:
-            writer.writeheader()
-        writer.writerows(records)
-
 def load_to_db(trip_records):
-
     if not trip_records:
         print("No records to insert.")
         return
@@ -47,13 +33,13 @@ def load_to_db(trip_records):
         flight_data_rows = [
             (
                 str(rec["id"]), rec["fetch_date"], rec["trip_type"], str(rec["trip_id"]),
-                rec["origin"], rec["destination"], rec["price"], rec["score"], rec["tags"]
+                rec["origin"], rec["destination"], rec["price"], rec["currency"], rec["score"], rec["tags"]
             )
             for rec in trip_records
         ]
 
         insert_data_query = """
-            INSERT INTO flight_data (id, fetch_date, trip_type, trip_id, origin, destination, price, score, tags)
+            INSERT INTO flight_data (id, fetch_date, trip_type, trip_id, origin, destination, price, currency, score, tags)
             VALUES %s
             ON CONFLICT (trip_id) DO NOTHING
         """

@@ -13,6 +13,7 @@ def transform_to_records(raw_json, user_data, budget=None):
 
         for item in sorted(itineraries, key=lambda x: x.get("price", {}).get("raw", float('inf'))):
             price_raw = item.get("price", {}).get("raw")
+            currency = item.get("price", {}).get("currency", "USD")
             if price_raw is None or (budget is not None and price_raw > float(budget)):
                 continue
 
@@ -59,6 +60,7 @@ def transform_to_records(raw_json, user_data, budget=None):
                 "origin": legs_data[0]["origin"],
                 "destination": legs_data[0]["destination"],
                 "price": price_raw,
+                "currency": currency,
                 "score": item.get("score"),
                 "tags": ", ".join(item.get("tags", [])),
                 "legs": legs_data
